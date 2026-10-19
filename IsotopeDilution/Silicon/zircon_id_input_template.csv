@@ -1,0 +1,5 @@
+experiment_id,sample_id,time_h,W_H2O_mg,W_H2O_mg_sd,spike_SiO2_ug,spike_SiO2_ug_sd,spike_Si_mmolal,spike_Si_mmolal_sd,spike_A28,spike_A28_sd,spike_A29,spike_A29_sd,R30_28,R30_28_sd,R29_28,R29_28_sd,Si_meas_mmolal,Si_meas_mmolal_sd,Zr_meas_mmolal,Zr_meas_mmolal_sd,blank_Si_nmol,blank_Si_nmol_sd,notes
+Zir026,Zir026_03,168,112.4,0.005,5.59E+02,1,,,0.0046,0.0001,0.0002,0.0001,29.58,0.29,,,,,,,,,endpoint capsule run; spike added as 30SiO2 powder
+Zir028,Zir028_03,168,128.2,0.005,800,1,,,0.0046,0.0001,0.0002,0.0001,4.55,0.033,0.3193,0.0044,,,,,,,endpoint capsule run; spike added as 30SiO2 powder
+Zir029,Zir029,168,129,0.005,1100,1,,,0.0046,0.0001,0.0002,0.0001,2.53,0.1,0.0962,0.001,,,,,,,endpoint capsule run; spike added as 30SiO2 powder
+Zir024,Zir024,168,112.5,0.005,685.9,1,,,0.0046,0.0001,0.0002,0.0001,0.061,0.018,,,,,,,,,endpoint capsule run; spike added as 30SiO2 powder

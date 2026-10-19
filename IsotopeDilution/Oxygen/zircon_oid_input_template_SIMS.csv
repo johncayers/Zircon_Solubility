@@ -1,0 +1,3 @@
+experiment_id,sample_id,time_h,W_H2O_mg,W_H2O_mg_sd,spike_SiO2_ug,spike_SiO2_ug_sd,spike_Si_mmolal,spike_Si_mmolal_sd,spike_A28,spike_A28_sd,spike_A29,spike_A29_sd,d18O_H2O,d18O_H2O_sd,d18O_SiO2,d18O_SiO2_sd,d18O_zrc,d18O_zrc_sd,d18O_0_meas,d18O_0_meas_sd,d18O_fl,d18O_fl_sd,Delta_solute_water,Delta_solute_water_sd,mZrSiO4_SiID_mmolal,mZrSiO4_SiID_mmolal_sd,notes
+Zir026,SIMS 26_01,168,112.4,0.005,559.3,1,,,0.0046,0.0001,0.0002,0.0001,-50.55,0.04,20.77,0.1,5,0.1,,,-1.4,0.03,0,0,0.135,0.0049,SYNTHETIC d18O_fl forward-modelled from 30Si-ID result; replace with measured value
+Zir028,SIMS 28_1,168,128.2,0.005,800,1,,,0.0046,0.0001,0.0002,0.0001,-50.55,0.04,20.77,0.1,5,0.1,,,23.6,0.03,0,0,,,
