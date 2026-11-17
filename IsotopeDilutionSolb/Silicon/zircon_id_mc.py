@@ -87,7 +87,8 @@ SHARED = ["W_H2O_mg", "spike_SiO2_ug", "spike_Si_mmolal", "spike_A28",
 
 COLUMN_DOC = {
     "experiment_id": "Run/capsule identifier. Rows sharing it form a time series.",
-    "sample_id": "Unique label for this fluid analysis.",
+    "sample_id": "Label for this fluid analysis. Need not be unique on its own: "
+                 "results and histograms are keyed on experiment_id + sample_id.",
     "time_h": "Run duration or sampling time (h). Orders a time series.",
     "W_H2O_mg": "Mass of H2O in the charge (mg).",
     "spike_SiO2_ug": "Mass of 30SiO2 spike loaded (ug). Give this OR spike_Si_mmolal.",
@@ -110,6 +111,26 @@ def _num(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce")
 
 
+def make_labels(exp_ids, sample_ids) -> list[str]:
+    """Unique label per row: sample_id if it already starts with the
+    experiment_id (e.g. Zir026 / Zir026_03 -> Zir026_03), otherwise
+    experiment_id_sample_id (e.g. Zir026_S / Surface -> Zir026_S_Surface).
+    Any remaining duplicates get a numeric suffix."""
+    labels, seen = [], {}
+    for e, s in zip(exp_ids, sample_ids):
+        lab = s if s.startswith(e) else f"{e}_{s}"
+        k = seen.get(lab, 0)
+        seen[lab] = k + 1
+        labels.append(lab if k == 0 else f"{lab}_{k + 1}")
+    return labels
+
+
+def safe_filename(name: str) -> str:
+    """Replace characters that are not safe in Windows/macOS file names."""
+    import re
+    return re.sub(r'[^A-Za-z0-9._-]+', "_", str(name)).strip("_") or "sample"
+
+
 def read_input(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, comment="#", skip_blank_lines=True)
     df.columns = [c.strip() for c in df.columns]
@@ -121,12 +142,17 @@ def read_input(path: Path) -> pd.DataFrame:
         df[v] = _num(df, v)
         df[s] = _num(df, s).fillna(0.0)
     df["time_h"] = _num(df, "time_h")
+    df["experiment_id"] = df["experiment_id"].astype(str).str.strip()
+    sid = df["sample_id"].astype("string").str.strip()
+    df["sample_id"] = sid.fillna(df["experiment_id"]).replace("", pd.NA).fillna(
+        df["experiment_id"]).astype(str)
+    df["label"] = make_labels(df["experiment_id"], df["sample_id"])
     if "blank_Si_nmol" in df:
         df["blank_Si_nmol"] = df["blank_Si_nmol"].fillna(0.0)
     bad = df[df["spike_SiO2_ug"].isna() & df["spike_Si_mmolal"].isna()]
     if len(bad):
         sys.exit("Each row needs spike_SiO2_ug or spike_Si_mmolal: "
-                 f"{list(bad['sample_id'])}")
+                 f"{list(bad['experiment_id'])}")
     return df
 
 
@@ -235,8 +261,8 @@ def run(df: pd.DataFrame, n_draws: int, seed: int | None, nat_sd: bool = True):
             m_x = n_x / W_kg                                           # mol/kg
             m_A = n_A / W_kg
 
-            out = {"experiment_id": exp_id, "sample_id": r["sample_id"],
-                   "time_h": r["time_h"]}
+            out = {"label": r["label"], "experiment_id": exp_id,
+                   "sample_id": r["sample_id"], "time_h": r["time_h"]}
             out.update(summarise(m_x * 1e3, "mZrSiO4_mmolal"))
             out.update(summarise(m_x * M_ZRSIO4 * 1e3, "ZrSiO4_mg_per_kgH2O"))
             out.update(summarise(m_x * M_ZR * 1e3, "Zr_ug_per_gH2O"))
@@ -268,7 +294,13 @@ def run(df: pd.DataFrame, n_draws: int, seed: int | None, nat_sd: bool = True):
                 r["R30_28"], RA_nom, RB_nom)
             out["optimal_R30_28"] = math.sqrt(RA_nom * RB_nom)
             row_out.append(out)
-            draws_store[r["sample_id"]] = m_x * 1e3
+            draws_store[r["label"]] = m_x * 1e3
+
+            # how well R_m is resolved from the natural ratio; when it is not,
+            # n_x is unbounded (denominator of Eq. 1 -> 0) and the result is
+            # meaningless
+            out["R30_minus_Rnat_in_sd"] = ((r["R30_28"] - RB_nom) / r["R30_28_sd"]
+                                           if r["R30_28_sd"] > 0 else np.inf)
 
             # store for time-series integral: 28Si fraction of the solution
             if np.isfinite(r["Si_meas_mmolal"]):
@@ -288,7 +320,8 @@ def run(df: pd.DataFrame, n_draws: int, seed: int | None, nat_sd: bool = True):
                 u = -np.log(B28 - f)
             dSi = trapz(n, u)                          # mol/kg released
             e = {"experiment_id": exp_id, "n_points": len(ts_f),
-                 "last_sample_id": g["sample_id"].iloc[-1]}
+                 "last_sample_id": g["sample_id"].iloc[-1],
+                 "last_label": g["label"].iloc[-1]}
             e.update(summarise(dSi * 1e3, "dSiB_integral_mmolal"))
             e.update(summarise(dSi * M_ZRSIO4 * 1e3, "ZrSiO4_integral_mg_per_kgH2O"))
             exp_out.append(e)
@@ -310,7 +343,6 @@ BUDGET_GROUPS = {
 def uncertainty_budget(df, n_draws, seed):
     """Variance share of each input group, by one-group-at-a-time MC."""
     sd_cols = [c for c in PAIRS.values() if c in df.columns]
-    targets = [("sample", "sample_id", "mZrSiO4_mmolal_sd")]
     res_rows, res_exp = {}, {}
     for grp, cols in BUDGET_GROUPS.items():
         d = df.copy()
@@ -318,25 +350,35 @@ def uncertainty_budget(df, n_draws, seed):
             if c not in cols:
                 d[c] = 0.0
         r, e, _ = run(d, n_draws, seed, nat_sd=(grp == "natural Si composition"))
-        res_rows[grp] = r.set_index("sample_id")["mZrSiO4_mmolal_sd"] ** 2
+        res_rows[grp] = r.set_index("label")["mZrSiO4_mmolal_sd"] ** 2
         if len(e):
             res_exp[grp] = e.set_index("experiment_id")["dSiB_integral_mmolal_sd"] ** 2
     rows = pd.DataFrame(res_rows)
     rows = rows.div(rows.sum(axis=1), axis=0).add_prefix("var_share_")
+    rows = rows.mask(rows.abs() < 1e-12, 0.0)
     exps = pd.DataFrame(res_exp)
     if len(exps):
         exps = exps.div(exps.sum(axis=1), axis=0).add_prefix("var_share_")
     return rows.reset_index(), exps.reset_index() if len(exps) else exps
 
 
-def make_plots(draws: dict, outdir: Path):
+def make_plots(draws: dict, outdir: Path) -> list[Path]:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    written = []
     for sid, x in draws.items():
         x = x[np.isfinite(x)]
+        if x.size == 0:
+            print(f"  {sid}: no finite draws, histogram skipped")
+            continue
         fig, ax = plt.subplots(figsize=(4.5, 3.2))
-        ax.hist(x, bins=80, color="#4a6fa5", alpha=0.85)
+        # clip the binning range so heavy tails (R_m near natural) do not
+        # squash the histogram into one bar
+        r0, r1 = np.percentile(x, [0.5, 99.5])
+        if r1 <= r0:
+            r0, r1 = r0 - 0.5, r1 + 0.5
+        ax.hist(x, bins=80, range=(r0, r1), color="#4a6fa5", alpha=0.85)
         lo, med, hi = np.percentile(x, [2.5, 50, 97.5])
         for v, ls in [(lo, ":"), (med, "-"), (hi, ":")]:
             ax.axvline(v, color="k", ls=ls, lw=1)
@@ -344,37 +386,54 @@ def make_plots(draws: dict, outdir: Path):
         ax.set_ylabel("MC draws")
         ax.set_title(f"{sid}: {med:.4g} [{lo:.4g}, {hi:.4g}]", fontsize=9)
         fig.tight_layout()
-        fig.savefig(outdir / f"mc_hist_{sid}.png", dpi=200)
+        f = outdir / f"mc_hist_{safe_filename(sid)}.png"
+        fig.savefig(f, dpi=200)
         plt.close(fig)
+        written.append(f)
+    return written
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(
         description="Zircon solubility by 30Si isotope dilution with Monte Carlo errors.")
-    p.add_argument("input", nargs="?", help="input CSV (see template)")
+    p.add_argument("input", nargs="?", default=None,
+                   help="input CSV (default: zircon_id_input_template.csv in the "
+                        "same folder as this script)")
     p.add_argument("-n", "--draws", type=int, default=100_000,
                    help="Monte Carlo draws (default 100000)")
     p.add_argument("--seed", type=int, default=None, help="random seed")
     p.add_argument("-o", "--outdir", default=None,
                    help="output folder (default: next to input)")
-    p.add_argument("--plots", action="store_true",
-                   help="write histogram PNG for each sample")
+    p.add_argument("--plots", dest="plots", action="store_true", default=True,
+                   help="write a histogram PNG for each sample (default)")
+    p.add_argument("--no-plots", dest="plots", action="store_false",
+                   help="do not write histograms")
     p.add_argument("--budget", action="store_true",
                    help="also write an uncertainty budget (variance share by input)")
     p.add_argument("--describe", action="store_true",
                    help="print the input column definitions and exit")
     a = p.parse_args(argv)
 
-    if a.describe or not a.input:
+    if a.describe:
         for k, v in COLUMN_DOC.items():
             sd = f"  (+ {PAIRS[k]})" if k in PAIRS else ""
             print(f"{k:18s} {v}{sd}")
         return
 
-    inp = Path(a.input)
+    script_dir = Path(__file__).resolve().parent
+    inp = Path(a.input) if a.input else script_dir / "zircon_id_input_template.csv"
+    if not inp.is_absolute() and not inp.exists() and (script_dir / inp).exists():
+        inp = script_dir / inp          # e.g. run from VS Code with another cwd
+    if not inp.exists():
+        sys.exit(f"Input file not found: {inp}")
+    inp = inp.resolve()
     df = read_input(inp)
-    outdir = Path(a.outdir) if a.outdir else inp.parent
+    # all outputs (CSVs and histograms) go in the input file's folder
+    outdir = Path(a.outdir).resolve() if a.outdir else inp.parent
     outdir.mkdir(parents=True, exist_ok=True)
+    print(f"Input:  {inp}  ({len(df)} samples, "
+          f"{df['experiment_id'].nunique()} experiments)")
+    print(f"Output: {outdir}")
 
     rows, exps, draws_store = run(df, a.draws, a.seed)
     stem = inp.stem
@@ -390,23 +449,30 @@ def main(argv=None):
         f3 = outdir / f"{stem}_uncertainty_budget.csv"
         if len(be):
             be = be.rename(columns={"experiment_id": "id"}).assign(result="time-series integral")
-        br = br.rename(columns={"sample_id": "id"}).assign(result="endpoint")
+        br = br.rename(columns={"label": "id"}).assign(result="endpoint")
         pd.concat([br, be], ignore_index=True).to_csv(f3, index=False)
         print(f"Wrote {f3}")
     if a.plots:
-        make_plots(draws_store, outdir)
-        print(f"Wrote histograms to {outdir}")
+        pngs = make_plots(draws_store, outdir)
+        print(f"Wrote {len(pngs)} histograms to {outdir}")
 
     # brief console summary
-    cols = ["sample_id", "mZrSiO4_mmolal_median", "mZrSiO4_mmolal_p2.5",
+    cols = ["label", "mZrSiO4_mmolal_median", "mZrSiO4_mmolal_p2.5",
             "mZrSiO4_mmolal_p97.5", "s0_pure_water_mmolal_median",
-            "error_magnification_R30"]
+            "error_magnification_R30", "R30_minus_Rnat_in_sd"]
     with pd.option_context("display.width", 140, "display.float_format", "{:.4g}".format):
         print(rows[cols].to_string(index=False))
         if len(exps):
             print(exps[["experiment_id", "n_points", "dSiB_integral_mmolal_median",
                         "dSiB_integral_mmolal_p2.5",
                         "dSiB_integral_mmolal_p97.5"]].to_string(index=False))
+
+    weak = rows[(rows["R30_minus_Rnat_in_sd"] < 3) | (rows["error_magnification_R30"] > 10)]
+    for _, w in weak.iterrows():
+        print(f"WARNING {w['label']}: measured 30Si/28Si is "
+              f"{w['R30_minus_Rnat_in_sd']:.1f} sd from the natural ratio "
+              f"(error magnification {w['error_magnification_R30']:.0f}); "
+              "the spike is nearly swamped and this result is not reliable.")
 
 
 if __name__ == "__main__":
